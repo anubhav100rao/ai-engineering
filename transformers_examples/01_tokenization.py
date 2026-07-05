@@ -16,37 +16,38 @@ In these lessons we use CHARACTER-LEVEL tokenization because it's the
 simplest thing that actually works, and it lets us train a real model on a
 small corpus. The transformer itself doesn't care — it just sees integers.
 
+The implementation lives in char_tokenizer.py (30 lines — read it!); every
+other file in this course imports that one class, so there is exactly one
+tokenizer in the codebase.
+
 Run me:  python3 01_tokenization.py
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
 
+from char_tokenizer import CharTokenizer
 
-class CharTokenizer:
-    """Maps every unique character in a corpus to an integer id."""
-
-    def __init__(self, text: str):
-        # The vocabulary is simply the sorted set of unique characters.
-        self.chars = sorted(set(text))
-        self.vocab_size = len(self.chars)
-        # stoi: string -> integer, itos: integer -> string
-        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
-        self.itos = {i: ch for i, ch in enumerate(self.chars)}
-
-    def encode(self, text: str) -> list[int]:
-        return [self.stoi[ch] for ch in text]
-
-    def decode(self, ids: list[int]) -> str:
-        return "".join(self.itos[i] for i in ids)
+CORPUS_PATH = Path(__file__).resolve().parent / "data" / "tiny_corpus.txt"
 
 
-def demo():
-    corpus = open("data/tiny_corpus.txt", encoding="utf-8").read()
+def load_corpus(path: Path = CORPUS_PATH) -> str:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"corpus not found at {path} — did data/tiny_corpus.txt move?")
+    return path.read_text(encoding="utf-8")
+
+
+def demo() -> None:
+    corpus = load_corpus()
     tok = CharTokenizer(corpus)
 
     print(f"Corpus length : {len(corpus):,} characters")
     print(f"Vocab size    : {tok.vocab_size} unique characters")
-    print(f"Vocabulary    : {''.join(tok.chars)!r}\n")
+    print(f"Vocabulary    : {tok.vocab!r}\n")
 
     sample = "Alice was beginning"
     ids = tok.encode(sample)
@@ -54,6 +55,13 @@ def demo():
     print(f"  -> {ids}")
     print(f"decode(...) -> {tok.decode(ids)!r}")
     assert tok.decode(ids) == sample, "round-trip must be lossless"
+
+    # Encoding is STRICT: unknown characters fail loudly at the boundary
+    # instead of corrupting training data silently.
+    try:
+        tok.encode("Alice 🐇")
+    except ValueError as e:
+        print(f"\nencode('Alice 🐇') raises: {e}")
 
     # This is what the model will actually consume: a numpy array of ids.
     data = np.array(tok.encode(corpus), dtype=np.int64)

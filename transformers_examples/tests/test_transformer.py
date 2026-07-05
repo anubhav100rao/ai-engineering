@@ -1,7 +1,7 @@
 """
-Tests for the transformer lessons.
+Tests for the transformer lessons and the TinyGPT library.
 
-Run from the transformers_examples directory:
+Run from anywhere:
 
     python3 tests/test_transformer.py        # plain python, no deps
     python3 -m pytest tests/ -v              # or with pytest if you have it
@@ -12,34 +12,62 @@ passes, every chain-rule step through attention, layernorm, residuals and
 embeddings is correct.
 """
 
+from __future__ import annotations
+
 import importlib
-import os
 import sys
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
 # make the lesson files importable regardless of where tests run from
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-os.chdir(ROOT)
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from model import TinyGPT, Adam, softmax  # noqa: E402
+from char_tokenizer import CharTokenizer                    # noqa: E402
+from model import (                                         # noqa: E402
+    Adam, GPTConfig, TinyGPT, clip_grad_norm,
+)
 
-lesson01 = importlib.import_module("01_tokenization")
+# lesson files start with digits, so import them the roundabout way
 lesson02 = importlib.import_module("02_embeddings_and_positions")
 lesson03 = importlib.import_module("03_attention")
 lesson04 = importlib.import_module("04_multi_head_attention")
 lesson05 = importlib.import_module("05_transformer_block")
 
 
-# --------------------------- lesson unit tests ------------------------------
+# --------------------------- tokenizer --------------------------------------
 
 def test_tokenizer_roundtrip():
-    tok = lesson01.CharTokenizer("hello world")
+    tok = CharTokenizer("hello world")
     s = "hello hello world"
     assert tok.decode(tok.encode(s)) == s
     assert tok.vocab_size == len(set("hello world"))
 
+
+def test_tokenizer_vocab_roundtrip():
+    tok = CharTokenizer("the quick brown fox")
+    rebuilt = CharTokenizer.from_vocab(tok.vocab)
+    assert rebuilt.stoi == tok.stoi, "vocab string must rebuild identically"
+
+
+def test_tokenizer_rejects_bad_input():
+    tok = CharTokenizer("abc")
+    for fn, bad in [(tok.encode, "abcd"), (tok.decode, [99]), (tok.decode, [-1])]:
+        try:
+            fn(bad)
+            raise AssertionError(f"{fn.__name__}({bad!r}) should have raised")
+        except ValueError:
+            pass
+    try:
+        CharTokenizer("")
+        raise AssertionError("empty text should have raised")
+    except ValueError:
+        pass
+
+
+# --------------------------- lesson unit tests ------------------------------
 
 def test_positional_encoding_properties():
     pe = lesson02.sinusoidal_positional_encoding(max_len=100, d_model=32)
@@ -47,6 +75,11 @@ def test_positional_encoding_properties():
     assert np.all(np.abs(pe) <= 1.0)                    # sin/cos bounded
     # every position's fingerprint is unique
     assert len({tuple(np.round(row, 6)) for row in pe}) == 100
+    try:  # sin/cos come in pairs, so odd d_model must be rejected
+        lesson02.sinusoidal_positional_encoding(max_len=10, d_model=15)
+        raise AssertionError("odd d_model should have raised")
+    except ValueError:
+        pass
 
 
 def test_attention_weights_are_distributions():
@@ -98,12 +131,48 @@ def test_layernorm_normalizes():
     assert np.allclose(y.std(-1), 1.0, atol=1e-2)
 
 
-# --------------------------- model.py tests ---------------------------------
+# --------------------------- config & validation ----------------------------
 
-def _tiny_model():
-    return TinyGPT(vocab_size=11, block_size=6, n_embd=16, n_head=2,
-                   n_layer=2, seed=0)
+def test_config_validation():
+    for kwargs in (
+        dict(vocab_size=11, block_size=6, n_embd=15, n_head=2),  # 15 % 2 != 0
+        dict(vocab_size=0, block_size=6),                        # nonpositive
+        dict(vocab_size=11, block_size=-1),
+    ):
+        try:
+            GPTConfig(**kwargs)
+            raise AssertionError(f"GPTConfig({kwargs}) should have raised")
+        except ValueError:
+            pass
 
+
+def _tiny_model() -> TinyGPT:
+    return TinyGPT(GPTConfig(vocab_size=11, block_size=6, n_embd=16,
+                             n_head=2, n_layer=2, seed=0))
+
+
+def test_forward_input_validation():
+    m = _tiny_model()
+    cases = [
+        np.zeros((1, 10), dtype=np.int64),          # T > block_size
+        np.full((1, 4), 99, dtype=np.int64),        # id >= vocab_size
+        np.full((1, 4), -3, dtype=np.int64),        # negative id
+    ]
+    for bad in cases:
+        try:
+            m.forward(bad)
+            raise AssertionError(f"forward({bad.shape}, max={bad.max()}) "
+                                 "should have raised")
+        except ValueError:
+            pass
+    try:
+        m.forward(np.zeros((1, 4), dtype=np.float64))  # non-integer dtype
+        raise AssertionError("float ids should have raised")
+    except TypeError:
+        pass
+
+
+# --------------------------- model behavior ---------------------------------
 
 def test_model_forward_shapes_and_loss():
     m = _tiny_model()
@@ -138,7 +207,7 @@ def test_gradient_check():
     _, _, cache = m.forward(x, y)
     grads = m.backward(cache)
 
-    def loss_at():
+    def loss_at() -> float:
         _, loss, _ = m.forward(x, y)
         return loss
 
@@ -165,19 +234,43 @@ def test_gradient_check():
     print(f"    (gradient check passed on {checked} parameter entries)")
 
 
-def test_training_reduces_loss():
-    """A few Adam steps on a fixed batch must drive the loss down."""
+def test_backward_requires_targets():
     m = _tiny_model()
-    opt = Adam(m.params, lr=1e-2)
+    _, _, cache = m.forward(np.zeros((1, 4), dtype=np.int64))  # no targets
+    try:
+        m.backward(cache)
+        raise AssertionError("backward without targets should have raised")
+    except ValueError:
+        pass
+
+
+def test_training_reduces_loss():
+    """A few AdamW steps on a fixed batch must drive the loss down."""
+    m = _tiny_model()
+    opt = Adam(m.params, lr=1e-2, weight_decay=0.01)
     rng = np.random.default_rng(8)
     x = rng.integers(0, 11, size=(4, 6))
     y = rng.integers(0, 11, size=(4, 6))
     _, first, cache = m.forward(x, y)
     for _ in range(30):
         _, loss, cache = m.forward(x, y)
-        opt.step(m.params, m.backward(cache))
+        grads = m.backward(cache)
+        clip_grad_norm(grads, 1.0)
+        opt.step(m.params, grads)
     _, last, _ = m.forward(x, y)
     assert last < first * 0.5, f"loss barely moved: {first:.3f} -> {last:.3f}"
+
+
+def test_clip_grad_norm():
+    grads = {"a": np.array([3.0, 0.0]), "b": np.array([0.0, 4.0])}  # norm 5
+    pre = clip_grad_norm(grads, max_norm=1.0)
+    assert abs(pre - 5.0) < 1e-9, "must report the pre-clip norm"
+    total = np.sqrt(sum((g * g).sum() for g in grads.values()))
+    assert abs(total - 1.0) < 1e-9, "must scale down to max_norm"
+    # under the limit: untouched
+    grads2 = {"a": np.array([0.3, 0.4])}
+    clip_grad_norm(grads2, max_norm=1.0)
+    assert np.allclose(grads2["a"], [0.3, 0.4])
 
 
 def test_generate_extends_sequence():
@@ -186,6 +279,40 @@ def test_generate_extends_sequence():
                      rng=np.random.default_rng(9))
     assert out.shape == (1, 11)
     assert np.all((out >= 0) & (out < 11))
+    # deterministic given the same seed
+    out2 = m.generate(np.array([[1, 2, 3]]), max_new_tokens=8,
+                      rng=np.random.default_rng(9))
+    assert np.array_equal(out, out2)
+
+
+def test_generate_validates_arguments():
+    m = _tiny_model()
+    prompt = np.array([[1, 2]])
+    for kwargs in (dict(temperature=0.0), dict(top_k=0), dict(top_k=99),
+                   dict(max_new_tokens=-1)):
+        try:
+            m.generate(prompt, max_new_tokens=kwargs.pop("max_new_tokens", 2),
+                       **kwargs)
+            raise AssertionError(f"generate(**{kwargs}) should have raised")
+        except ValueError:
+            pass
+
+
+def test_checkpoint_roundtrip():
+    m = _tiny_model()
+    x = np.array([[1, 2, 3, 4]])
+    logits_before, _, _ = m.forward(x)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = m.save(Path(tmp) / "ckpt", meta={"vocab": "abc", "steps": 7})
+        assert path.suffix == ".npz"
+        loaded, meta = TinyGPT.load(path)
+
+    assert meta == {"vocab": "abc", "steps": 7}
+    assert loaded.config == m.config
+    logits_after, _, _ = loaded.forward(x)
+    assert np.array_equal(logits_before, logits_after), \
+        "loaded model must produce bit-identical logits"
 
 
 # --------------------------- runner -----------------------------------------

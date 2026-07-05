@@ -26,18 +26,29 @@ also exactly how real implementations (PyTorch, GPT) do it.
 Run me:  python3 04_multi_head_attention.py
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 
-def softmax(x, axis=-1):
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     x = x - x.max(axis=axis, keepdims=True)
     e = np.exp(x)
     return e / e.sum(axis=axis, keepdims=True)
 
 
 class MultiHeadAttention:
-    def __init__(self, d_model: int, n_heads: int, seed: int = 0):
-        assert d_model % n_heads == 0, "d_model must divide evenly into heads"
+    """Single-sequence multi-head self-attention (forward only, for teaching).
+
+    The trainable, batched version with backprop lives in model.py.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, seed: int = 0) -> None:
+        if d_model <= 0 or n_heads <= 0:
+            raise ValueError("d_model and n_heads must be positive")
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by "
+                             f"n_heads ({n_heads}) so heads get equal slices")
         self.d_model, self.n_heads = d_model, n_heads
         self.d_head = d_model // n_heads
         rng = np.random.default_rng(seed)
@@ -47,8 +58,13 @@ class MultiHeadAttention:
         self.W_v = rng.normal(0, s, (d_model, d_model))
         self.W_o = rng.normal(0, s, (d_model, d_model))
 
-    def __call__(self, x: np.ndarray, causal: bool = True):
-        """x: (T, d_model) -> (output (T, d_model), weights (n_heads, T, T))"""
+    def __call__(
+        self, x: np.ndarray, causal: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """x: (T, d_model) -> (output (T, d_model), weights (n_heads, T, T))."""
+        if x.ndim != 2 or x.shape[1] != self.d_model:
+            raise ValueError(f"expected x of shape (T, {self.d_model}), "
+                             f"got {x.shape}")
         T, D = x.shape
         H, d_h = self.n_heads, self.d_head
 
@@ -71,7 +87,7 @@ class MultiHeadAttention:
         return concat @ self.W_o, weights
 
 
-def demo():
+def demo() -> None:
     np.set_printoptions(precision=2, suppress=True)
     rng = np.random.default_rng(1)
 

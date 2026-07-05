@@ -24,21 +24,26 @@ Three new ingredients:
    Attention moves information BETWEEN positions; the FFN transforms it AT
    each position. Most of a transformer's parameters live here.
 
-Stack N of these blocks and you have a transformer.
+Stack N of these blocks and you have a transformer. (The trainable, batched
+version with backprop is in model.py — same wiring, line for line.)
 
 Run me:  python3 05_transformer_block.py
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 
-def softmax(x, axis=-1):
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     x = x - x.max(axis=axis, keepdims=True)
     e = np.exp(x)
     return e / e.sum(axis=axis, keepdims=True)
 
 
-def layer_norm(x, gain, bias, eps=1e-5):
+def layer_norm(
+    x: np.ndarray, gain: np.ndarray, bias: np.ndarray, eps: float = 1e-5
+) -> np.ndarray:
     """Normalize each row (token vector) to mean 0 / var 1, then scale+shift."""
     mu = x.mean(axis=-1, keepdims=True)
     var = x.var(axis=-1, keepdims=True)
@@ -46,7 +51,12 @@ def layer_norm(x, gain, bias, eps=1e-5):
 
 
 class TransformerBlock:
-    def __init__(self, d_model, n_heads, seed=0):
+    """One pre-norm GPT block: causal attention + MLP, each with a residual."""
+
+    def __init__(self, d_model: int, n_heads: int, seed: int = 0) -> None:
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by "
+                             f"n_heads ({n_heads})")
         rng = np.random.default_rng(seed)
         s = 1 / np.sqrt(d_model)
         self.n_heads, self.d_head = n_heads, d_model // n_heads
@@ -62,7 +72,8 @@ class TransformerBlock:
         self.ln1_g, self.ln1_b = np.ones(d_model), np.zeros(d_model)
         self.ln2_g, self.ln2_b = np.ones(d_model), np.zeros(d_model)
 
-    def attention(self, x):
+    def attention(self, x: np.ndarray) -> np.ndarray:
+        """Multi-head causal self-attention (see lessons 3-4). (T,D) -> (T,D)."""
         T, D = x.shape
         H, d_h = self.n_heads, self.d_head
         Q = (x @ self.W_q).reshape(T, H, d_h).transpose(1, 0, 2)
@@ -74,18 +85,19 @@ class TransformerBlock:
         heads = softmax(scores) @ V
         return heads.transpose(1, 0, 2).reshape(T, D) @ self.W_o
 
-    def ffn(self, x):
+    def ffn(self, x: np.ndarray) -> np.ndarray:
+        """Position-wise MLP: never mixes information between tokens."""
         h = np.maximum(0, x @ self.W1 + self.b1)   # ReLU
         return h @ self.W2 + self.b2
 
-    def __call__(self, x):
+    def __call__(self, x: np.ndarray) -> np.ndarray:
         # Pre-norm residual wiring — read this as "x plus a correction".
         x = x + self.attention(layer_norm(x, self.ln1_g, self.ln1_b))
         x = x + self.ffn(layer_norm(x, self.ln2_g, self.ln2_b))
         return x
 
 
-def demo():
+def demo() -> None:
     np.set_printoptions(precision=3, suppress=True)
     rng = np.random.default_rng(7)
     T, d_model = 8, 32

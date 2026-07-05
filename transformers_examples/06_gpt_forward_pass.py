@@ -23,38 +23,42 @@ T predictions at once. That's why transformers train so efficiently.
 Run me:  python3 06_gpt_forward_pass.py
 """
 
-import importlib
+from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
 
-from model import TinyGPT, softmax
+from char_tokenizer import CharTokenizer
+from model import GPTConfig, TinyGPT, softmax
 
-# lesson files start with digits, so import them the roundabout way
-tokenization = importlib.import_module("01_tokenization")
+CORPUS_PATH = Path(__file__).resolve().parent / "data" / "tiny_corpus.txt"
 
 
-def demo():
+def demo() -> None:
     np.set_printoptions(precision=3, suppress=True)
 
-    corpus = open("data/tiny_corpus.txt", encoding="utf-8").read()
-    tok = tokenization.CharTokenizer(corpus)
+    corpus = CORPUS_PATH.read_text(encoding="utf-8")
+    tok = CharTokenizer(corpus)
 
-    model = TinyGPT(vocab_size=tok.vocab_size, block_size=32,
-                    n_embd=48, n_head=4, n_layer=2, seed=0)
-    print(f"TinyGPT: {model.n_layer} layers, {model.n_head} heads, "
-          f"d_model={model.n_embd}, vocab={tok.vocab_size}")
+    config = GPTConfig(vocab_size=tok.vocab_size, block_size=32,
+                       n_embd=48, n_head=4, n_layer=2, seed=0)
+    model = TinyGPT(config)
+    print(f"TinyGPT: {config.n_layer} layers, {config.n_head} heads, "
+          f"d_model={config.n_embd}, vocab={config.vocab_size}")
     print(f"Total parameters: {model.num_params():,} "
           f"(GPT-2 has 124,000,000; same architecture!)\n")
 
     prompt = "Alice was b"
     ids = np.array([tok.encode(prompt)])          # (1, T) — batch of one
     B, T = ids.shape
-    D, V = model.n_embd, tok.vocab_size
+    D, V = config.n_embd, config.vocab_size
 
     print(f"prompt {prompt!r} -> ids {ids[0]}   shape (B={B}, T={T})\n")
     print("Shapes through the network:")
     print(f"  token embedding  wte[ids] : ({B}, {T}, {D})")
     print(f"  + pos embedding  wpe[:T]  :     ({T}, {D})  broadcast over batch")
-    for i in range(model.n_layer):
+    for i in range(config.n_layer):
         print(f"  block {i} (attn+MLP)        : ({B}, {T}, {D})  shape-preserving")
     print(f"  final layernorm           : ({B}, {T}, {D})")
     print(f"  head projection           : ({B}, {T}, {V})  <- logits\n")
@@ -67,7 +71,7 @@ def demo():
     top = np.argsort(probs)[::-1][:5]
     print(f"P(next char | {prompt!r}) — top 5 (untrained, so ~uniform noise):")
     for t in top:
-        print(f"  {tok.itos[t]!r:>6} : {probs[t]:.4f}")
+        print(f"  {tok.itos[int(t)]!r:>6} : {probs[t]:.4f}")
     print(f"  (uniform would be 1/{V} = {1/V:.4f} — training is what sharpens this)\n")
 
     # THE LOSS: shift-by-one next-token prediction, all positions at once.
@@ -78,6 +82,13 @@ def demo():
     print(f"  untrained loss : {loss:.3f}")
     print(f"  ln(vocab) =    : {np.log(V):.3f}  <- 'random guessing' baseline")
     print("Training (lesson 7) is just: nudge all parameters to push this down.")
+
+    # Production guardrails: the model rejects malformed input loudly.
+    try:
+        model.forward(np.zeros((1, 100), dtype=np.int64))  # T > block_size
+    except ValueError as e:
+        print(f"\nGuardrail demo — forward() with T=100 > block_size=32 raises:")
+        print(f"  ValueError: {e}")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ than to id 40. The model needs each token as a VECTOR it can do math on.
 Run me:  python3 02_embeddings_and_positions.py
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 
@@ -34,11 +36,18 @@ def token_embedding_lookup(ids: np.ndarray, table: np.ndarray) -> np.ndarray:
 
     An embedding "layer" is literally just fancy indexing.
     """
+    if ids.size and (ids.min() < 0 or ids.max() >= table.shape[0]):
+        raise ValueError(f"ids must be in [0, {table.shape[0]})")
     return table[ids]
 
 
 def sinusoidal_positional_encoding(max_len: int, d_model: int) -> np.ndarray:
     """Build the (max_len, d_model) sinusoidal position table."""
+    if max_len <= 0:
+        raise ValueError(f"max_len must be positive, got {max_len}")
+    if d_model <= 0 or d_model % 2 != 0:
+        raise ValueError(f"d_model must be a positive even number, got "
+                         f"{d_model} (sin/cos come in pairs)")
     pos = np.arange(max_len)[:, None]            # (max_len, 1)
     i = np.arange(0, d_model, 2)[None, :]        # (1, d_model/2)
     angle = pos / (10000 ** (i / d_model))       # (max_len, d_model/2)
@@ -48,7 +57,11 @@ def sinusoidal_positional_encoding(max_len: int, d_model: int) -> np.ndarray:
     return pe
 
 
-def demo():
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def demo() -> None:
     rng = np.random.default_rng(42)
     vocab_size, d_model = 50, 16
 
@@ -68,12 +81,9 @@ def demo():
     print("After adding positional encodings, the two copies of token 3 differ.")
 
     # Nearby positions have similar encodings; distant ones don't.
-    def cos_sim(a, b):
-        return a @ b / (np.linalg.norm(a) * np.linalg.norm(b))
-
     print("\nCosine similarity between position vectors:")
     for p, q in [(0, 1), (0, 2), (0, 5), (0, 20)]:
-        print(f"  pos {p} vs pos {q:>2}: {cos_sim(pe[p], pe[q]):+.3f}")
+        print(f"  pos {p} vs pos {q:>2}: {cosine_similarity(pe[p], pe[q]):+.3f}")
     print("-> similarity decays with distance: positions carry geometry.")
 
     # Visualize the table coarsely (rows = positions, cols = dims).

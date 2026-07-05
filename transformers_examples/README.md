@@ -18,14 +18,18 @@ Run each lesson in order; each one prints a narrated demo:
 | `06_gpt_forward_pass.py` | One narrated forward pass through the full model, shapes at every stage |
 | `07_train_tiny_gpt.py` | Train the model end-to-end and watch it learn to write |
 
-Supporting files:
+Library and tooling (single source of truth — the lessons import these):
 
-- **`model.py`** — `TinyGPT`: the complete GPT (same architecture as GPT-2, just small),
-  with **hand-written backpropagation** and an Adam optimizer. Read it after lesson 5.
+- **`model.py`** — `GPTConfig` + `TinyGPT`: the complete GPT (same architecture as
+  GPT-2, just small) with **hand-written backpropagation**, input validation,
+  checkpointing, gradient clipping, and an AdamW-style optimizer.
+- **`char_tokenizer.py`** — the strict character-level tokenizer used everywhere.
+- **`generate.py`** — load a saved checkpoint and sample text (train once, sample forever).
 - **`data/tiny_corpus.txt`** — 60 KB of *Alice in Wonderland* (public domain).
-- **`tests/test_transformer.py`** — 12 tests, including a **numerical gradient check**
-  that proves the hand-derived backprop is correct, and a causality test that proves
-  the model can't peek at the future.
+- **`tests/test_transformer.py`** — 18 tests: a **numerical gradient check** that
+  proves the hand-derived backprop is correct, a causality test that proves the
+  model can't peek at the future, checkpoint round-trips, and validation of
+  every error path.
 
 ## Quick start
 
@@ -33,11 +37,13 @@ Supporting files:
 cd transformers_examples
 
 python3 01_tokenization.py            # then 02, 03, ... in order
-python3 tests/test_transformer.py     # run all tests (no pytest needed)
+python3 tests/test_transformer.py     # run all tests (pytest also works)
 python3 07_train_tiny_gpt.py          # the finale: ~30s of training on CPU
+python3 generate.py --prompt "The Queen"   # sample from the saved checkpoint
 ```
 
-Only requirement: `numpy`.
+Only requirement: `numpy` (see `requirements.txt`). Training accepts flags for
+every hyperparameter — `python3 07_train_tiny_gpt.py --help`.
 
 ## The big picture
 
@@ -62,8 +68,8 @@ Three ideas carry the whole architecture:
 
 ## Where to go next
 
-- Swap `data/tiny_corpus.txt` for your own text and retrain.
-- Scale up `n_embd`, `n_layer`, `block_size` in lesson 7 and watch the samples improve.
+- Swap in your own corpus: `python3 07_train_tiny_gpt.py --data my_text.txt`.
+- Scale up: `--steps 5000 --n-embd 128 --n-layer 4` and watch the samples improve.
 - Read [Attention Is All You Need](https://arxiv.org/abs/1706.03762) (Vaswani et al., 2017) —
   after these lessons the paper reads easily.
 - Karpathy's [nanoGPT](https://github.com/karpathy/nanoGPT) is this same model in PyTorch, scaled up.

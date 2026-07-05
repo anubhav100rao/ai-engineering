@@ -29,21 +29,44 @@ CAUSAL MASKING: a language model predicts the future, so token i must not
 peek at tokens j > i. We set those scores to -inf before the softmax, which
 turns them into exactly 0 weight after it.
 
+(This file re-derives attention standalone for teaching; the batched,
+multi-head, differentiable version everything trains with is in model.py.)
+
 Run me:  python3 03_attention.py
 """
+
+from __future__ import annotations
 
 import numpy as np
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    # Subtract the max for numerical stability (doesn't change the result).
+    """Numerically stable softmax (subtracting the max changes nothing)."""
     x = x - x.max(axis=axis, keepdims=True)
     e = np.exp(x)
     return e / e.sum(axis=axis, keepdims=True)
 
 
-def scaled_dot_product_attention(Q, K, V, causal: bool = False):
-    """Q,K: (T, d_k), V: (T, d_v). Returns (output (T, d_v), weights (T, T))."""
+def scaled_dot_product_attention(
+    Q: np.ndarray, K: np.ndarray, V: np.ndarray, causal: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single-head attention.
+
+    Args:
+        Q: (T, d_k) queries.  K: (T, d_k) keys.  V: (T, d_v) values.
+        causal: if True, position i may only attend to positions <= i.
+
+    Returns:
+        (output (T, d_v), attention weights (T, T)); each weight row is a
+        probability distribution over the positions attended to.
+    """
+    if Q.ndim != 2 or K.ndim != 2 or V.ndim != 2:
+        raise ValueError("Q, K, V must be 2-D (T, d) arrays")
+    if Q.shape[1] != K.shape[1]:
+        raise ValueError(f"query dim {Q.shape[1]} != key dim {K.shape[1]}")
+    if K.shape[0] != V.shape[0]:
+        raise ValueError(f"K has {K.shape[0]} positions but V has {V.shape[0]}")
+
     d_k = Q.shape[-1]
     scores = Q @ K.T / np.sqrt(d_k)              # (T, T)
     if causal:
@@ -54,7 +77,7 @@ def scaled_dot_product_attention(Q, K, V, causal: bool = False):
     return weights @ V, weights
 
 
-def demo():
+def demo() -> None:
     np.set_printoptions(precision=3, suppress=True)
 
     # A tiny hand-built example: 4 tokens, d_k = 4.
